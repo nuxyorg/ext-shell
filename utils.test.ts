@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { parseCoordinate, ensureShellStyles, SHELL_EXT_ID, SHELL_CSS_ID } from './utils.js'
+import { parseCoordinate, ensureShellStyles, SHELL_EXT_ID, SHELL_CSS_ID } from './utils.ts'
 
 describe('constants', () => {
   it('exports SHELL_EXT_ID', () => {
@@ -147,9 +147,9 @@ describe('parseCoordinate', () => {
 
 describe('ensureShellStyles', () => {
   // Stub a minimal DOM in the node environment for each test
-  let createdElements
-  let headChildren
-  let getElementByIdImpl
+  let createdElements: Array<{ tagName: string; id: string; rel: string; href: string }>
+  let headChildren: Array<{ tagName: string; id: string; rel: string; href: string }>
+  let getElementByIdImpl: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     createdElements = []
@@ -158,13 +158,13 @@ describe('ensureShellStyles', () => {
 
     vi.stubGlobal('document', {
       getElementById: getElementByIdImpl,
-      createElement: vi.fn((tag) => {
+      createElement: vi.fn((tag: string) => {
         const el = { tagName: tag, id: '', rel: '', href: '' }
         createdElements.push(el)
         return el
       }),
       head: {
-        appendChild: vi.fn((el) => {
+        appendChild: vi.fn((el: { tagName: string; id: string; rel: string; href: string }) => {
           headChildren.push(el)
         }),
       },

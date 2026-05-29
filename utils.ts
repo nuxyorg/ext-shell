@@ -1,7 +1,11 @@
 export const SHELL_EXT_ID = 'com.nuxy.shell'
 export const SHELL_CSS_ID = 'nuxy-shell-styles'
 
-export function parseCoordinate(val, displayLength, winLength) {
+export function parseCoordinate(
+  val: string | null | undefined,
+  displayLength: number,
+  winLength: number
+): number {
   if (!val) return Math.round((displayLength - winLength) / 2)
   val = val.trim().toLowerCase()
   if (val === 'center') return Math.round((displayLength - winLength) / 2)
@@ -31,7 +35,7 @@ export function parseCoordinate(val, displayLength, winLength) {
   return Math.round((displayLength - winLength) / 2)
 }
 
-export function ensureShellStyles() {
+export function ensureShellStyles(): void {
   if (document.getElementById(SHELL_CSS_ID)) return
   const link = document.createElement('link')
   link.id = SHELL_CSS_ID

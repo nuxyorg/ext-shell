@@ -1,10 +1,19 @@
 const React = window.React
 const { useState, useEffect, useLayoutEffect } = React
 
-export default function CommandPalette({ actions, onClose, containerRef, position }) {
+import type { CommandPaletteAction, Position } from './types.ts'
+
+interface CommandPaletteProps {
+  actions: CommandPaletteAction[]
+  onClose: () => void
+  containerRef: React.RefObject<HTMLDivElement | null>
+  position: Position
+}
+
+export default function CommandPalette({ actions, onClose, containerRef, position }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const [style, setStyle] = useState({})
+  const [style, setStyle] = useState<React.CSSProperties>({})
 
   const filteredActions = actions.filter((a) => a.label.toLowerCase().includes(query.toLowerCase()))
 
@@ -43,7 +52,7 @@ export default function CommandPalette({ actions, onClose, containerRef, positio
   }, [query])
 
   useEffect(() => {
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()

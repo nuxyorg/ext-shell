@@ -1,6 +1,30 @@
 const React = window.React
 
-export function ResultCard({ item, providerName, copiedId, onCopy }) {
+interface ResultItem {
+  id: string
+  title: string
+  value?: string
+  meta?: {
+    left?: { text: string; badge: string }
+    right?: { text: string; badge: string }
+  }
+}
+
+interface ResultCardProps {
+  item: ResultItem
+  providerName: string
+  copiedId: string | null
+  onCopy: (id: string) => void
+}
+
+interface CompareCardProps {
+  item: ResultItem
+  providerName: string
+  copiedId: string | null
+  onCopy: (id: string) => void
+}
+
+export function ResultCard({ item, providerName, copiedId, onCopy }: ResultCardProps) {
   const isCopied = copiedId === item.id
   return (
     <div
@@ -37,7 +61,7 @@ export function ResultCard({ item, providerName, copiedId, onCopy }) {
   )
 }
 
-export function CompareCard({ item, providerName, copiedId, onCopy }) {
+export function CompareCard({ item, providerName, copiedId, onCopy }: CompareCardProps) {
   const meta = item.meta
   if (!meta || !meta.left || !meta.right) return null
   const isCopied = copiedId === item.id
