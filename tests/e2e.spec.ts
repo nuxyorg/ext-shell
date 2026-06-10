@@ -1,8 +1,15 @@
 // fallow-ignore-file code-duplication
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { test, expect, type Page } from '../../src/e2e/fixtures.js'
-import { resetShell, typeInOmnibar, pressOmnibarKey, openTool, openCommandPalette, typeInCommandPalette } from '../e2e-helpers.js'
+import { test, expect, type Page } from '../../../src/e2e/fixtures.js'
+import {
+  resetShell,
+  typeInOmnibar,
+  pressOmnibarKey,
+  openTool,
+  openCommandPalette,
+  typeInCommandPalette,
+} from '../../e2e-helpers.js'
 
 // ---------------------------------------------------------------------------
 // App launch
@@ -46,11 +53,9 @@ test.describe('shell search', () => {
     await resetShell(appPage)
 
     await typeInOmnibar(appPage, '2+2')
-    await appPage.waitForFunction(
-      () => document.body.innerText.includes('= 4'),
-      undefined,
-      { timeout: 2000 }
-    )
+    await appPage.waitForFunction(() => document.body.innerText.includes('= 4'), undefined, {
+      timeout: 2000,
+    })
 
     const body = await appPage.evaluate(() => document.body.innerText)
     expect(body).toMatch(/= 4/)
@@ -178,15 +183,20 @@ test.describe('escape behavior', () => {
     expect(value).toBe('')
   })
 
-  test('escape from inside a tool returns to the shell', async ({ appPage }) => {
+  test('escape from inside a tool returns to the shell and clears omnibar', async ({ appPage }) => {
     await appPage.waitForSelector('input', { timeout: 2000 })
     await openTool(appPage, 'emoji')
 
+    await typeInOmnibar(appPage, 'test query')
     await appPage.keyboard.press('Escape')
     await appPage.waitForFunction(
       () => {
         const el = document.querySelector('.nuxy-shell-omni-bar__tool-name') as HTMLElement | null
-        return !el || el.hidden || !(el.textContent ?? '').trim()
+        const input = document.querySelector(
+          '.nuxy-shell-omni-bar__input'
+        ) as HTMLInputElement | null
+        const toolGone = !el || el.hidden || !(el.textContent ?? '').trim()
+        return toolGone && (input?.value ?? '') === ''
       },
       { timeout: 2000 }
     )
@@ -196,6 +206,13 @@ test.describe('escape behavior', () => {
       return el !== null && !el.hidden && (el.textContent ?? '').trim().length > 0
     })
     expect(hasToolName).toBe(false)
+
+    const value = await appPage.evaluate(
+      () =>
+        (document.querySelector('.nuxy-shell-omni-bar__input') as HTMLInputElement | null)?.value ??
+        'not-empty'
+    )
+    expect(value).toBe('')
   })
 })
 
@@ -216,9 +233,7 @@ test.describe('keyboard navigation', () => {
     })
 
     const hasActive = await appPage.evaluate(() => {
-      const items = document.querySelectorAll(
-        '[aria-selected="true"], .nuxy-shell-results-item--active'
-      )
+      const items = document.querySelectorAll('[aria-selected="true"], nuxy-list-item[active]')
       return items.length > 0
     })
     expect(hasActive).toBe(true)

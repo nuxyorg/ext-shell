@@ -1,21 +1,26 @@
-import type { ShellBridgeSnapshot } from '@nuxy/core'
-import { createStore, type Store } from '../ce-utils.ts'
+import type { ShellBridgeSnapshot, ReactiveControllerHost } from '@nuxy/core'
+import { createStore, type Store } from '../store.ts'
 import { createTranslator, type Translator } from '../shell-i18n.ts'
-import { buildOmnibarSections, type OmnibarSection } from './utils/listResults.ts'
 import { getZoom } from './utils/zoom.ts'
 import { parseCoordinate, SHELL_EXT_ID } from './utils.ts'
+import { getDeepActiveElement, isWritingElement } from './utils/keyboard.ts'
+import { CommandPaletteController } from './controllers/command-palette-controller.ts'
+import { ToolController } from './controllers/tool-controller.ts'
+import { ProviderController } from './controllers/provider-controller.ts'
+import { WindowController } from './controllers/window-controller.ts'
 import type {
   CommandPaletteAction,
   KeyAction,
   ListItem,
   Orchestrator,
-  Position,
   Provider,
   ProviderState,
   ShellConfig,
-  Size,
   Tool,
 } from './types.ts'
+import type { OmnibarSection } from './utils/listResults.ts'
+
+export type { OmnibarSection }
 
 const EMPTY_SNAPSHOT: ShellBridgeSnapshot = {
   toolActions: [],
@@ -39,27 +44,31 @@ const FONT_FAMILY_MAP: Record<string, string> = {
   monospace: 'monospace',
 }
 
-export interface ShellControllerState {
+export interface ShellCoreState {
   query: string
   savedQuery: string
   selectedIndex: number
-  activeTool: string | null
   showOmniBar: boolean
-  showCommandPalette: boolean
   isInitialLoad: boolean
   copiedId: string | null
-  position: Position
-  size: Size
+  themeStyles: Record<string, string> | null
+  settings: ShellConfig
+  searchIcon: string | null
+  bridge: ShellBridgeSnapshot
+}
+
+// Keep the old alias for any code that still reads ctrl.state
+export type ShellControllerState = ShellCoreState & {
+  activeTool: string | null
+  showCommandPalette: boolean
+  position: { x: number; y: number }
+  size: { width: number | null; height: number | null }
   isDraggingState: boolean
   tools: Tool[]
   providers: Provider[]
   orchestrators: Orchestrator[]
-  themeStyles: Record<string, string> | null
-  settings: ShellConfig
-  searchIcon: string | null
-  providerStates: Record<string, ProviderState>
   recentToolIds: string[]
-  bridge: ShellBridgeSnapshot
+  providerStates: Record<string, ProviderState>
   omnibarSections: OmnibarSection[]
   listResults: ListItem[]
   isAnyListProviderLoading: boolean
@@ -69,65 +78,93 @@ export interface ShellControllerRefs {
   container: HTMLElement | null
   input: HTMLInputElement | null
   cfg: ShellConfig | null
-  queryGeneration: number
   hasDragged: boolean
   selectionSource: 'type' | 'nav'
 }
 
 export class ShellController {
-  readonly store: Store<ShellControllerState>
+  readonly store: Store<ShellCoreState>
   readonly refs: ShellControllerRefs
   readonly t: Translator
 
+  // Sub-controllers — public so shell-view can read them directly
+  readonly commandPalette: CommandPaletteController
+  readonly tools: ToolController
+  readonly providers: ProviderController
+  readonly win: WindowController
+
+  private readonly _host: ReactiveControllerHost
   private cleanups: Array<() => void> = []
-  private isDragging = false
-  private providerTimer: ReturnType<typeof setTimeout> | null = null
   private copiedTimer: ReturnType<typeof setTimeout> | null = null
   private initialLoadTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(private onUpdate: () => void) {
-    const zoom = getZoom()
-    const dw = window.innerWidth / zoom
-    const dh = window.innerHeight / zoom
+    this._host = {
+      addController: () => {},
+      removeController: () => {},
+      requestUpdate: () => this.onUpdate(),
+      updateComplete: Promise.resolve(true),
+    }
 
-    this.store = createStore<ShellControllerState>({
+    this.commandPalette = new CommandPaletteController(this._host)
+    this.win = new WindowController(this._host)
+    this.tools = new ToolController(this._host, {
+      onToolChange: (toolId) => {
+        window.core?.shell?.resetToolState()
+        this.providers.sync(
+          this.store.getState().savedQuery,
+          toolId,
+          this.tools.tools,
+          this.tools.recentToolIds
+        )
+      },
+    })
+    this.providers = new ProviderController(this._host)
+
+    this.store = createStore<ShellCoreState>({
       query: '',
       savedQuery: '',
       selectedIndex: -1,
-      activeTool: null,
       showOmniBar: true,
-      showCommandPalette: false,
       isInitialLoad: true,
       copiedId: null,
-      position: { x: Math.round((dw - 800) / 2), y: Math.round(dh * 0.15) },
-      size: { width: null, height: null },
-      isDraggingState: false,
-      tools: [],
-      providers: [],
-      orchestrators: [],
       themeStyles: null,
       settings: DEFAULT_SETTINGS,
       searchIcon: null,
-      providerStates: {},
-      recentToolIds: [],
       bridge: EMPTY_SNAPSHOT,
-      omnibarSections: [],
-      listResults: [],
-      isAnyListProviderLoading: false,
     })
 
     this.refs = {
       container: null,
       input: null,
       cfg: null,
-      queryGeneration: 0,
       hasDragged: false,
       selectionSource: 'type',
     }
 
     this.t = createTranslator(SHELL_EXT_ID, () => this.onUpdate())
-
     this.store.subscribe(() => this.onUpdate())
+  }
+
+  // Merged state view for backward-compat with shell-view
+  get state(): ShellControllerState {
+    const core = this.store.getState()
+    return {
+      ...core,
+      activeTool: this.tools.activeTool,
+      showCommandPalette: this.commandPalette.showCommandPalette,
+      position: this.win.position,
+      size: this.win.size,
+      isDraggingState: this.win.isDraggingState,
+      tools: this.tools.tools,
+      providers: this.providers.providers,
+      orchestrators: this.tools.orchestrators,
+      recentToolIds: this.tools.recentToolIds,
+      providerStates: this.providers.providerStates,
+      omnibarSections: this.providers.omnibarSections,
+      listResults: this.providers.listResults,
+      isAnyListProviderLoading: this.providers.isAnyListProviderLoading,
+    }
   }
 
   connect(): void {
@@ -136,14 +173,13 @@ export class ShellController {
     this.bindSync()
     this.bindGlobalKeyboard()
     this.bindQuerySelectionSync()
-    this.recomputeListResults()
+    this.providers.recompute(this.tools.tools, '', this.tools.recentToolIds)
     this.initialLoadTimer = setTimeout(() => {
       this.store.setState({ isInitialLoad: false })
     }, 500)
   }
 
   disconnect(): void {
-    if (this.providerTimer) clearTimeout(this.providerTimer)
     if (this.copiedTimer) clearTimeout(this.copiedTimer)
     if (this.initialLoadTimer) clearTimeout(this.initialLoadTimer)
     this.cleanups.forEach((fn) => fn())
@@ -152,29 +188,12 @@ export class ShellController {
     window.core?.shell?.resetToolState()
   }
 
-  get state(): ShellControllerState {
-    return this.store.getState()
-  }
-
   get activeToolName(): string | null {
-    const { activeTool, tools } = this.state
-    if (!activeTool) return null
-    const tool = tools.find((t) => t.id === activeTool)
-    return tool?.manifest.name ?? activeTool
+    return this.tools.activeToolName
   }
 
   get activeToolPlaceholder(): string | null {
-    const { activeTool, tools } = this.state
-    if (!activeTool) return null
-    const tool = tools.find((t) => t.id === activeTool)
-    return (tool?.manifest as { placeholder?: string } | undefined)?.placeholder ?? null
-  }
-
-  itemClass(index: number): string {
-    const { selectedIndex, themeStyles } = this.state
-    return index === selectedIndex
-      ? (themeStyles?.itemActive ?? 'nuxy-shell-results-item nuxy-shell-results-item--active')
-      : (themeStyles?.itemInactive ?? 'nuxy-shell-results-item')
+    return this.tools.activeToolPlaceholder
   }
 
   setQuery(val: string): void {
@@ -183,28 +202,27 @@ export class ShellController {
 
   setSavedQuery(val: string): void {
     this.store.setState({ savedQuery: val })
-    this.syncProviders()
-    this.recomputeListResults()
+    this._syncProviders()
+    this._recompute()
   }
 
   setSelectedIndex(index: number | ((prev: number) => number)): void {
-    const prev = this.state.selectedIndex
+    const prev = this.store.getState().selectedIndex
     const next = typeof index === 'function' ? index(prev) : index
     this.store.setState({ selectedIndex: next })
   }
 
   setActiveTool(toolId: string | null): void {
-    this.store.setState({ activeTool: toolId })
-    this.syncProviders()
-    this.recomputeListResults()
-    if (toolId) window.core?.shell?.resetToolState()
+    this.tools.setActiveTool(toolId)
+    this._syncProviders()
+    this._recompute()
   }
 
   handleQueryChange(val: string): void {
     this.refs.selectionSource = 'type'
     this.store.setState({ query: val, savedQuery: val, selectedIndex: -1 })
-    this.syncProviders()
-    this.recomputeListResults()
+    this._syncProviders()
+    this._recompute()
   }
 
   handleCopy(id: string): void {
@@ -214,11 +232,12 @@ export class ShellController {
   }
 
   openTool(toolId: string, initialQuery = ''): void {
-    this.setActiveTool(toolId)
-    this.store.setState({ providerStates: {}, query: initialQuery, savedQuery: initialQuery })
-    this.recordToolUsed(toolId)
-    this.syncProviders()
-    this.recomputeListResults()
+    this.tools.setActiveTool(toolId)
+    this.store.setState({ query: initialQuery, savedQuery: initialQuery })
+    this.providers.clearProviderStates()
+    this._recordToolUsed(toolId)
+    this._syncProviders()
+    this._recompute()
   }
 
   async handleItemClick(item: ListItem): Promise<void> {
@@ -242,7 +261,8 @@ export class ShellController {
   }
 
   async tryOrchestratorRoute(): Promise<void> {
-    const { savedQuery, orchestrators } = this.state
+    const { savedQuery } = this.store.getState()
+    const { orchestrators } = this.tools
     if (!savedQuery.trim() || orchestrators.length === 0) return
     try {
       const res = await window.core.ipc.invoke(orchestrators[0].id, 'route', { text: savedQuery })
@@ -260,12 +280,13 @@ export class ShellController {
   }
 
   handleOmniKeyDown(e: KeyboardEvent): void {
-    const { activeTool, query, savedQuery, selectedIndex, listResults } = this.state
+    const { savedQuery, selectedIndex } = this.store.getState()
+    const { activeTool } = this.tools
+    const listResults = this.providers.listResults
 
-    if (activeTool && query === '' && e.key === 'Backspace') {
+    if (activeTool && this.store.getState().query === '' && e.key === 'Backspace') {
       e.preventDefault()
-      this.setActiveTool(null)
-      this.store.setState({ query: '', savedQuery: '', selectedIndex: 0 })
+      this.returnToShell({ selectedIndex: 0 })
       return
     }
 
@@ -309,228 +330,78 @@ export class ShellController {
   }
 
   handleDragMouseDown(e: MouseEvent): void {
-    if (e.button !== 0) return
-    if (!(e.target instanceof HTMLInputElement)) e.preventDefault()
-    this.isDragging = true
-    this.store.setState({ isDraggingState: true })
     this.refs.hasDragged = true
-
-    let zoom = getZoom()
-    const startClientX = e.clientX
-    const startClientY = e.clientY
-    const { position } = this.state
-    const startPosX = position.x
-    const startPosY = position.y
-
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      if (!this.isDragging) return
-      const deltaX = (moveEvent.clientX - startClientX) / zoom
-      const deltaY = (moveEvent.clientY - startClientY) / zoom
-      const container = this.refs.container
-      const winWidth = container ? container.offsetWidth : 0
-      const winHeight = container ? container.offsetHeight : 0
-      const dw = window.innerWidth / zoom
-      const dh = window.innerHeight / zoom
-      this.store.setState({
-        position: {
-          x: Math.max(0, Math.min(startPosX + deltaX, Math.max(0, dw - winWidth))),
-          y: Math.max(0, Math.min(startPosY + deltaY, Math.max(0, dh - winHeight))),
-        },
-      })
-    }
-
-    const onMouseUp = () => {
-      this.isDragging = false
-      this.store.setState({ isDraggingState: false })
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
-    }
-
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
+    this.win.handleDragMouseDown(e, this.refs.container)
   }
 
   handleResizeMouseDown(e: MouseEvent, direction: string): void {
-    e.preventDefault()
-    e.stopPropagation()
-    this.isDragging = true
-    this.store.setState({ isDraggingState: true })
     this.refs.hasDragged = true
-
-    const zoom = getZoom()
-    const startClientX = e.clientX
-    const startClientY = e.clientY
-    const container = this.refs.container!
-    const startWidth = container.offsetWidth
-    const startHeight = container.offsetHeight
-    const { position } = this.state
-    const startX = position.x
-    const startY = position.y
-
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      if (!this.isDragging) return
-      const deltaX = (moveEvent.clientX - startClientX) / zoom
-      const deltaY = (moveEvent.clientY - startClientY) / zoom
-
-      let newWidth = startWidth
-      let newHeight = startHeight
-      let newX = startX
-      let newY = startY
-
-      if (direction.includes('e')) newWidth = startWidth + deltaX
-      if (direction.includes('w')) {
-        newWidth = startWidth - deltaX
-        newX = startX + deltaX
-      }
-      if (direction.includes('s')) newHeight = startHeight + deltaY
-      if (direction.includes('n')) {
-        newHeight = startHeight - deltaY
-        newY = startY + deltaY
-      }
-
-      if (newWidth < 300) {
-        if (direction.includes('w')) newX -= 300 - newWidth
-        newWidth = 300
-      }
-      if (newHeight < 100) {
-        if (direction.includes('n')) newY -= 100 - newHeight
-        newHeight = 100
-      }
-
-      const patch: Partial<ShellControllerState> = { size: { width: newWidth, height: newHeight } }
-      if (newX !== startX || newY !== startY) patch.position = { x: newX, y: newY }
-      this.store.setState(patch)
-    }
-
-    const onMouseUp = () => {
-      this.isDragging = false
-      this.store.setState({ isDraggingState: false })
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
-    }
-
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
+    this.win.handleResizeMouseDown(e, direction, this.refs.container)
   }
 
   closeCommandPalette(): void {
-    this.store.setState({ showCommandPalette: false })
+    this.commandPalette.close()
     setTimeout(() => this.refs.input?.focus(), 50)
   }
 
   toggleCommandPalette(): void {
-    this.store.setState({ showCommandPalette: !this.state.showCommandPalette })
-  }
-
-  containerStyle(): Record<string, string | undefined> {
-    const { position, size, settings, activeTool, isDraggingState, isInitialLoad } = this.state
-    const transition =
-      isDraggingState || isInitialLoad
-        ? 'none'
-        : 'left 0.3s cubic-bezier(0.16, 1, 0.3, 1), top 0.3s cubic-bezier(0.16, 1, 0.3, 1), width 0.3s cubic-bezier(0.16, 1, 0.3, 1), height 0.3s cubic-bezier(0.16, 1, 0.3, 1), max-width 0.3s cubic-bezier(0.16, 1, 0.3, 1), max-height 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.5s cubic-bezier(0.16, 1, 0.3, 1)'
-
-    return {
-      left: `${position.x}px`,
-      top: `${position.y}px`,
-      width: size.width ? `${size.width}px` : settings?.windowWidth ? `${settings.windowWidth}px` : undefined,
-      height: size.height
-        ? `${size.height}px`
-        : activeTool
-          ? `${settings?.windowMaxHeight ?? 600}px`
-          : undefined,
-      maxWidth: size.width ? 'none' : settings?.windowWidth ? `${settings.windowWidth}px` : undefined,
-      maxHeight: size.height ? 'none' : `${settings?.windowMaxHeight ?? 600}px`,
-      opacity: settings?.opacity !== undefined ? String(settings.opacity) : undefined,
-      transition,
+    const wasOpen = this.commandPalette.showCommandPalette
+    this.commandPalette.toggle()
+    if (!wasOpen) {
+      requestAnimationFrame(() => {
+        const input = document
+          .querySelector('nuxy-command-palette')
+          ?.shadowRoot?.querySelector('.nuxy-command-palette__input') as HTMLInputElement | null
+        input?.focus()
+      })
     }
   }
 
-  private recordToolUsed(toolId: string): void {
+  /** Deactivate the active tool and reset omnibar query to return to the main shell screen. */
+  returnToShell(options?: { selectedIndex?: number }): void {
+    this.tools.setActiveTool(null)
+    this.store.setState({
+      query: '',
+      savedQuery: '',
+      selectedIndex: options?.selectedIndex ?? -1,
+      showOmniBar: true,
+    })
+    this._syncProviders()
+    this._recompute()
+    setTimeout(() => this.refs.input?.focus(), 50)
+  }
+
+  containerStyle(): Record<string, string | undefined> {
+    const { settings, isInitialLoad } = this.store.getState()
+    return this.win.containerStyle(settings, this.tools.activeTool, isInitialLoad)
+  }
+
+  private _recordToolUsed(toolId: string): void {
     window.core?.ipc
       ?.invoke(SHELL_EXT_ID, 'recordToolUsed', toolId)
       .then((res: unknown) => {
         const r = res as { success: boolean; data: string[] } | null
         if (r?.success && Array.isArray(r.data)) {
-          this.store.setState({ recentToolIds: r.data })
-          this.recomputeListResults()
+          this.tools.setRecentToolIds(r.data)
+          this._recompute()
         }
       })
       .catch(() => {})
   }
 
-  private recomputeListResults(): void {
-    const { tools, savedQuery, providerStates, recentToolIds, providers } = this.state
-    const { sections, flatItems } = buildOmnibarSections(
-      tools,
-      savedQuery,
-      providerStates,
-      recentToolIds,
-      providers
-    )
-    const isAnyListProviderLoading = Object.values(providerStates).some(
-      (s) => s.type === 'list' && s.loading
-    )
-    this.store.setState({
-      omnibarSections: sections,
-      listResults: flatItems,
-      isAnyListProviderLoading,
-    })
+  private _recompute(): void {
+    const { savedQuery } = this.store.getState()
+    this.providers.recompute(this.tools.tools, savedQuery, this.tools.recentToolIds)
   }
 
-  private syncProviders(): void {
-    if (this.providerTimer) clearTimeout(this.providerTimer)
-
-    const { activeTool, savedQuery, providers } = this.state
-    if (activeTool || savedQuery.trim().length === 0) {
-      this.store.setState({ providerStates: {} })
-      this.recomputeListResults()
-      return
-    }
-
-    const generation = ++this.refs.queryGeneration
-    this.providerTimer = setTimeout(() => {
-      const initialStates: Record<string, ProviderState> = {}
-      providers.forEach((provider) => {
-        const type = (provider.manifest?.providerType as ProviderState['type']) || 'list'
-        const name = provider.manifest?.name || provider.id
-        initialStates[provider.id] = { loading: true, items: [], type, name }
-      })
-      this.store.setState({ providerStates: initialStates })
-      this.recomputeListResults()
-
-      providers.forEach((provider) => {
-        const type = (provider.manifest?.providerType as ProviderState['type']) || 'list'
-        const name = provider.manifest?.name || provider.id
-        window.core?.ipc
-          ?.invoke(provider.id, 'eval', { text: savedQuery })
-          .then((res: unknown) => {
-            if (generation !== this.refs.queryGeneration) return
-            const r = res as { success: boolean; data?: { items?: ProviderState['items'] } } | null
-            this.store.setState((prev) => ({
-              providerStates: {
-                ...prev.providerStates,
-                [provider.id]: {
-                  loading: false,
-                  items: r?.success && r.data?.items ? r.data.items : [],
-                  type,
-                  name,
-                },
-              },
-            }))
-            this.recomputeListResults()
-          })
-          .catch(() => {
-            if (generation !== this.refs.queryGeneration) return
-            this.store.setState((prev) => ({
-              providerStates: {
-                ...prev.providerStates,
-                [provider.id]: { loading: false, items: [], type, name },
-              },
-            }))
-            this.recomputeListResults()
-          })
-      })
-    }, 50)
+  private _syncProviders(): void {
+    const { savedQuery } = this.store.getState()
+    this.providers.sync(
+      savedQuery,
+      this.tools.activeTool,
+      this.tools.tools,
+      this.tools.recentToolIds
+    )
   }
 
   private applyTheme(name: string): void {
@@ -573,8 +444,8 @@ export class ShellController {
       window.core?.ipc?.invoke('kernel', 'listProviders', {}).then((res: unknown) => {
         const r = res as { success: boolean; data: Provider[] }
         if (r.success && r.data) {
-          this.store.setState({ providers: r.data })
-          this.syncProviders()
+          this.providers.setProviders(r.data)
+          this._syncProviders()
         }
       })
     }
@@ -582,7 +453,7 @@ export class ShellController {
     const fetchOrchestrators = () => {
       window.core?.ipc?.invoke('kernel', 'listOrchestrators', {}).then((res: unknown) => {
         const r = res as { success: boolean; data: Orchestrator[] }
-        if (r.success && r.data) this.store.setState({ orchestrators: r.data })
+        if (r.success && r.data) this.tools.setOrchestrators(r.data)
       })
     }
 
@@ -591,8 +462,8 @@ export class ShellController {
         const r = res as { success: boolean; data: Tool[] }
         if (!r.success || !r.data) return
         const filtered = r.data.filter((t) => t.id !== SHELL_EXT_ID)
-        this.store.setState({ tools: filtered })
-        this.recomputeListResults()
+        this.tools.setTools(filtered)
+        this._recompute()
       })
     }
 
@@ -641,8 +512,8 @@ export class ShellController {
       .then((res: unknown) => {
         const r = res as { success: boolean; data: string[] } | null
         if (r?.success && Array.isArray(r.data)) {
-          this.store.setState({ recentToolIds: r.data })
-          this.recomputeListResults()
+          this.tools.setRecentToolIds(r.data)
+          this._recompute()
         }
       })
       .catch(() => {})
@@ -664,13 +535,16 @@ export class ShellController {
   }
 
   private bindQuerySelectionSync(): void {
-    let prevSelected = this.state.selectedIndex
-    let prevSaved = this.state.savedQuery
-    let prevListLen = this.state.listResults.length
-    let prevActiveTool = this.state.activeTool
+    let prevSelected = this.store.getState().selectedIndex
+    let prevSaved = this.store.getState().savedQuery
+    let prevListLen = this.providers.listResults.length
+    let prevActiveTool = this.tools.activeTool
 
     this.store.subscribe(() => {
-      const { selectedIndex, savedQuery, listResults, activeTool } = this.state
+      const { selectedIndex, savedQuery } = this.store.getState()
+      const listResults = this.providers.listResults
+      const activeTool = this.tools.activeTool
+
       if (activeTool) {
         prevActiveTool = activeTool
         prevSelected = selectedIndex
@@ -694,15 +568,15 @@ export class ShellController {
       prevListLen = listResults.length
 
       if (selectedIndex === -1 || this.refs.selectionSource === 'type') {
-        if (this.state.query !== savedQuery) this.store.setState({ query: savedQuery })
+        if (this.store.getState().query !== savedQuery) this.store.setState({ query: savedQuery })
       } else if (listResults[selectedIndex]) {
         const title = listResults[selectedIndex].title
-        if (this.state.query !== title) this.store.setState({ query: title })
+        if (this.store.getState().query !== title) this.store.setState({ query: title })
       }
     })
   }
 
-  private updatePosition(force = false): void {
+  private _updatePosition(force = false): void {
     if (!this.refs.cfg?.windowPosition || !this.refs.container) return
     if (!force && this.refs.hasDragged) return
     const parts = this.refs.cfg.windowPosition.split(/[\s,]+/)
@@ -711,11 +585,9 @@ export class ShellController {
     const zoom = getZoom()
     const dw = window.innerWidth / zoom
     const dh = window.innerHeight / zoom
-    this.store.setState({
-      position: {
-        x: parseCoordinate(parts[0], dw, winWidth),
-        y: parseCoordinate(parts.length >= 2 ? parts[1] : '', dh, winHeight),
-      },
+    this.win.setPosition({
+      x: parseCoordinate(parts[0], dw, winWidth),
+      y: parseCoordinate(parts.length >= 2 ? parts[1] : '', dh, winHeight),
     })
   }
 
@@ -729,7 +601,7 @@ export class ShellController {
           if (currentZoom !== lastZoom) {
             lastZoom = currentZoom
             this.refs.hasDragged = false
-            setTimeout(() => this.updatePosition(true), 10)
+            setTimeout(() => this._updatePosition(true), 10)
           }
         }
       }
@@ -738,25 +610,27 @@ export class ShellController {
     this.cleanups.push(() => observer.disconnect())
 
     const onReset = () => {
+      this.tools.setActiveTool(null)
       this.store.setState({
         query: '',
         savedQuery: '',
-        providerStates: {},
-        activeTool: null,
         selectedIndex: -1,
         showOmniBar: true,
-        showCommandPalette: false,
       })
+      this.commandPalette.close()
+      this.providers.clearProviderStates()
       this.refs.hasDragged = false
-      this.updatePosition(true)
+      this._updatePosition(true)
       window.core?.shell?.resetToolState()
-      this.syncProviders()
-      this.recomputeListResults()
+      this._syncProviders()
+      this._recompute()
       setTimeout(() => this.refs.input?.focus(), 50)
     }
 
     const onFocus = () => {
-      const paletteInput = document.querySelector('.nuxy-command-palette__input')
+      const paletteInput = document
+        .querySelector('nuxy-command-palette')
+        ?.shadowRoot?.querySelector('.nuxy-command-palette__input')
       if (paletteInput) {
         ;(paletteInput as HTMLInputElement).focus()
       } else {
@@ -768,11 +642,11 @@ export class ShellController {
       if (detail) {
         this.applySettings(detail as ShellConfig)
         if (this.refs.cfg) this.refs.cfg = { ...this.refs.cfg, ...(detail as ShellConfig) }
-        setTimeout(() => this.updatePosition(true), 0)
+        setTimeout(() => this._updatePosition(true), 0)
       }
     }
 
-    const onResize = () => this.updatePosition(false)
+    const onResize = () => this._updatePosition(false)
 
     const offShellReset = window.core?.events?.on('shell-reset', onReset)
     window.addEventListener('focus', onFocus)
@@ -788,6 +662,9 @@ export class ShellController {
 
     const shell = window.core?.shell
     if (shell) {
+      const offReturn = shell.bindReturnToShell(() => this.returnToShell())
+      this.cleanups.push(offReturn)
+
       const offOmni = shell.subscribeOmniBarControl((action) => {
         if (action === 'hide') {
           this.store.setState({ showOmniBar: false })
@@ -796,7 +673,7 @@ export class ShellController {
           this.store.setState({ showOmniBar: true })
           setTimeout(() => this.refs.input?.focus(), 50)
         } else if (action === 'clear') {
-          this.store.setState({ query: '' })
+          this.store.setState({ query: '', savedQuery: '', selectedIndex: -1 })
         }
       })
       this.cleanups.push(offOmni)
@@ -812,11 +689,11 @@ export class ShellController {
       const winHeight = el.offsetHeight
       const maxX = Math.max(0, dw - winWidth)
       const maxY = Math.max(0, dh - winHeight)
-      const { position } = this.state
-      const clampedX = Math.max(0, Math.min(position.x, maxX))
-      const clampedY = Math.max(0, Math.min(position.y, maxY))
-      if (clampedX !== position.x || clampedY !== position.y) {
-        this.store.setState({ position: { x: clampedX, y: clampedY } })
+      const { x, y } = this.win.position
+      const clampedX = Math.max(0, Math.min(x, maxX))
+      const clampedY = Math.max(0, Math.min(y, maxY))
+      if (clampedX !== x || clampedY !== y) {
+        this.win.setPosition({ x: clampedX, y: clampedY })
       }
     })
   }
@@ -869,13 +746,12 @@ export class ShellController {
 
     const deactivateTool = () => {
       clearHold()
-      this.setActiveTool(null)
-      this.store.setState({ query: '', savedQuery: '', selectedIndex: 0, showOmniBar: true })
-      setTimeout(() => this.refs.input?.focus(), 50)
+      this.returnToShell({ selectedIndex: 0 })
     }
 
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      const { activeTool, showCommandPalette } = this.state
+      const { activeTool } = this.tools
+      const showCommandPalette = this.commandPalette.showCommandPalette
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
@@ -921,8 +797,8 @@ export class ShellController {
       if (showCommandPalette) return
 
       if (activeTool) {
-        const target = e.target as HTMLElement
-        const isInput = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+        const target = (e.composedPath?.()[0] || e.target) as HTMLElement
+        const isInput = isWritingElement(target)
         const isOmniBar = target?.classList?.contains('nuxy-shell-omni-bar__input')
         const actions = window.core?.shell?.getKeyActionsGetter()?.()
         if (actions && actions.length > 0) {
@@ -950,7 +826,7 @@ export class ShellController {
             return
           }
         }
-        if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+        if (!isInput) {
           window.dispatchEvent(
             new CustomEvent('nuxy-shell-omni-bar-keydown', {
               detail: {

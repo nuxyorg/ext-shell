@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildListResults, buildOmnibarSections } from './listResults.ts'
+import { buildListResults, buildOmnibarSections } from '../utils/listResults.ts'
 import type { Tool, ProviderState, Provider } from '../types.ts'
 
 const makeTool = (id: string, name: string): Tool => ({ id, manifest: { id, name } }) as Tool
@@ -179,7 +179,7 @@ describe('buildOmnibarSections', () => {
     const { sections } = buildOmnibarSections([], 'q', providerStates, [], providers)
     expect(sections).toHaveLength(1)
     expect(sections[0].id).toBe('actions')
-    expect(sections[0].label).toBe('Actions')
+    expect(sections[0].label).toBe('Tool actions')
     expect(sections[0].items).toHaveLength(2)
   })
 

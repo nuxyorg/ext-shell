@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { getZoom } from './zoom.ts'
+import { getZoom } from '../utils/zoom.ts'
 
 describe('getZoom', () => {
   let styleZoom = ''

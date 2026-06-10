@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { ShellController } from './shell-controller.ts'
+import { ShellController } from '../controller.ts'
 
 vi.hoisted(() => {
   ;(globalThis as any).window = {
@@ -29,7 +29,8 @@ describe('ShellController tryOrchestratorRoute', () => {
       data: { ok: true, data: { toolCalled: 'com.nuxy.calculator', initialQuery: '2+2' } },
     })
     const ctrl = new ShellController(() => {})
-    ctrl.store.setState({ savedQuery: 'what is 2+2', orchestrators: orchestrators as never[] })
+    ctrl.store.setState({ savedQuery: 'what is 2+2' })
+    ctrl.tools.setOrchestrators(orchestrators as never[])
     await ctrl.tryOrchestratorRoute()
     expect(window.core!.ipc.invoke).toHaveBeenCalledWith('com.nuxy.ai-orchestrator', 'route', {
       text: 'what is 2+2',
@@ -44,14 +45,15 @@ describe('ShellController tryOrchestratorRoute', () => {
       data: { ok: true, data: null },
     })
     const ctrl = new ShellController(() => {})
-    ctrl.store.setState({ savedQuery: 'hello', orchestrators: orchestrators as never[] })
+    ctrl.store.setState({ savedQuery: 'hello' })
+    ctrl.tools.setOrchestrators(orchestrators as never[])
     await ctrl.tryOrchestratorRoute()
     expect(ctrl.state.activeTool).toBeNull()
   })
 
   it('does nothing when orchestrators list is empty', async () => {
     const ctrl = new ShellController(() => {})
-    ctrl.store.setState({ savedQuery: 'hello', orchestrators: [] })
+    ctrl.store.setState({ savedQuery: 'hello' })
     vi.mocked(window.core!.ipc.invoke).mockClear()
     await ctrl.tryOrchestratorRoute()
     expect(window.core!.ipc.invoke).not.toHaveBeenCalled()

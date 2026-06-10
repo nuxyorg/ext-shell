@@ -1,13 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { parseCoordinate, ensureShellStyles, SHELL_EXT_ID, SHELL_CSS_ID } from './utils.ts'
+import { describe, it, expect } from 'vitest'
+import { parseCoordinate, SHELL_EXT_ID } from '../utils.ts'
 
 describe('constants', () => {
   it('exports SHELL_EXT_ID', () => {
     expect(SHELL_EXT_ID).toBe('com.nuxy.shell')
-  })
-
-  it('SHELL_CSS_ID matches the expected value', () => {
-    expect(SHELL_CSS_ID).toBe('nuxy-shell-styles')
   })
 })
 
@@ -158,57 +154,5 @@ describe('parseCoordinate', () => {
         expect(Number.isInteger(result), `non-integer for val=${JSON.stringify(val)}`).toBe(true)
       }
     })
-  })
-})
-
-describe('ensureShellStyles', () => {
-  // Stub a minimal DOM in the node environment for each test
-  let createdElements: Array<{ tagName: string; id: string; rel: string; href: string }>
-  let headChildren: Array<{ tagName: string; id: string; rel: string; href: string }>
-  let getElementByIdImpl: ReturnType<typeof vi.fn>
-
-  beforeEach(() => {
-    createdElements = []
-    headChildren = []
-    getElementByIdImpl = vi.fn().mockReturnValue(null)
-
-    vi.stubGlobal('document', {
-      getElementById: getElementByIdImpl,
-      createElement: vi.fn((tag: string) => {
-        const el = { tagName: tag, id: '', rel: '', href: '' }
-        createdElements.push(el)
-        return el
-      }),
-      head: {
-        appendChild: vi.fn((el: { tagName: string; id: string; rel: string; href: string }) => {
-          headChildren.push(el)
-        }),
-      },
-    })
-  })
-
-  afterEach(() => {
-    vi.unstubAllGlobals()
-  })
-
-  it('appends a <link> element with the correct id and href on first call', () => {
-    ensureShellStyles()
-    expect(headChildren).toHaveLength(1)
-    const link = headChildren[0]
-    expect(link.id).toBe(SHELL_CSS_ID)
-    expect(link.rel).toBe('stylesheet')
-    expect(link.href).toBe(`nuxy-ext://${SHELL_EXT_ID}/shell.css`)
-  })
-
-  it('does not append a second element when called again', () => {
-    // Second call: getElementById returns the already-inserted element
-    getElementByIdImpl
-      .mockReturnValueOnce(null) // first call: not found → insert
-      .mockReturnValueOnce({ id: SHELL_CSS_ID }) // second call: found → skip
-
-    ensureShellStyles()
-    ensureShellStyles()
-
-    expect(headChildren).toHaveLength(1)
   })
 })
